@@ -18,6 +18,7 @@ from database import add_connection, get_balance, store_key, update_balance
 from handlers.instructions import send_instructions
 from handlers.profile import process_callback_view_profile
 from handlers.start import start_command
+from handlers.pay import ReplenishBalanceState, process_custom_amount_input
 
 router = Router()
 
@@ -125,13 +126,48 @@ async def cancel_create_key(callback_query: CallbackQuery, state: FSMContext):
 
 @router.message(Command('start'))
 async def handle_start(message: types.Message, state: FSMContext):
-    # Обработка команды /start
     await start_command(message)
 
 @router.message(Command('menu'))
 async def handle_menu(message: types.Message, state: FSMContext):
-    # Обработка команды /menu
     await start_command(message)
+
+@router.message(Command('send_trial'))
+async def handle_send_trial_command(message: types.Message, state: FSMContext):
+    try:
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
+            # Получаем всех пользователей с не использованным пробным ключом
+            records = await conn.fetch('''
+                SELECT tg_id FROM connections WHERE trial = 0
+            ''')
+
+            if records:
+                for record in records:
+                    tg_id = record['tg_id']
+                    trial_message = (
+                        "🎉 Вам предоставлен пробный период на 1 день!\n"
+                        "Пожалуйста, воспользуйтесь им, чтобы протестировать наш сервис."
+                    )
+                    try:
+                        # Отправляем сообщение каждому пользователю
+                        await bot.send_message(chat_id=tg_id, text=trial_message)
+                    except Exception as e:
+                        # Если бот был заблокирован пользователем, просто пропускаем его
+                        if "Forbidden: bot was blocked by the user" in str(e):
+                            print(f"Бот заблокирован пользователем с tg_id: {tg_id}")
+                        else:
+                            print(f"Ошибка при отправке сообщения пользователю {tg_id}: {e}")
+
+                await message.answer("Сообщения о пробном периоде отправлены всем пользователям с не использованным ключом.")
+            else:
+                await message.answer("Нет пользователей с не использованными пробными ключами.")
+
+        finally:
+            await conn.close()
+
+    except Exception as e:
+        await message.answer(f"Ошибка при отправке сообщений: {e}")
 
 @router.message(Command('send_to_all'))
 async def send_message_to_all_clients(message: types.Message, state: FSMContext):
@@ -183,6 +219,11 @@ async def handle_text(message: types.Message, state: FSMContext):
             message=message
         )
         await process_callback_view_profile(callback_query, state)
+        return
+
+    if current_state == ReplenishBalanceState.entering_custom_amount.state:
+        # Здесь вызовите ваш обработчик ввода суммы
+        await process_custom_amount_input(message, state)
         return
 
     if current_state == Form.waiting_for_key_name.state:
@@ -271,7 +312,7 @@ async def handle_key_name_input(message: Message, state: FSMContext):
         )
 
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text='📖 Инструкции по использованию', callback_data='instructions')],
+            [InlineKeyboardButton(text='📘 Инструкции по использованию', callback_data='instructions')],
             [InlineKeyboardButton(text='🔙 Перейти в профиль', callback_data='view_profile')]
         ])
 
